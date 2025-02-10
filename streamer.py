@@ -16,10 +16,33 @@ class Streamer:
 
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
+        """ Allow Streamer#send to support data larger than 1472 bytes.
+        Break the data_bytes into chunks and send the data in multiple packets. """
         # Your code goes here!  The code below should be changed!
 
+        byte_size = len(data_bytes)
+ 
+        splits = byte_size // 1472 # 23 / 4 -> 5 
+        # (23) -> (0-3) (4-7) (8-11) (12-15) (16-19) (20-22)
+        #         [0:4] [4:8] [8:12]  [12:16] [16:20] [20:23]
+        start = 0
+        byte_arr = [] # 4 |
+        max_seg_size = 1472
+
+        if byte_size > max_seg_size:
+            for _ in range(splits):          
+                end = start + max_seg_size # 4 8 12 16 20
+                byte_arr.append(data_bytes[start:end])
+                start = end
+
+            if end < byte_size:
+                byte_arr.append(data_bytes[end:byte_size])
+        
+            for i in byte_arr:
+                self.socket.sendto(i,(self.dst_ip, self.dst_port) )
+        else:
         # for now I'm just sending the raw application-level data in one UDP payload
-        self.socket.sendto(data_bytes, (self.dst_ip, self.dst_port))
+            self.socket.sendto(data_bytes, (self.dst_ip, self.dst_port))
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
