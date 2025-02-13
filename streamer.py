@@ -8,6 +8,8 @@ from struct import *
 from heapq import *
 from queue import PriorityQueue
 
+from concurrent.futures import ThreadPoolExecutor
+
 class Streamer:
     def __init__(self, dst_ip, dst_port,
                  src_ip=INADDR_ANY, src_port=0):
@@ -21,10 +23,27 @@ class Streamer:
         self.seq = 0
         self.receive_buffer = []
         self.expected_seq = 0
-        
-        
 
 
+        executor = ThreadPoolExecutor(max_workers=1)
+        self.background_thread = executor.submit(self.listener)
+        
+
+    def listener(self):
+        while not self.closed: # a later hint will explain self.closed
+            try:
+                data, addr = self.socket.recvfrom() # header:data (in some order) -> 3:d 1:d 0:d 2:d 4:d
+
+                seq_num = unpack('!I', data[:4])  # Unpack the first 4 bytes as sequence number -> seq_num : 3
+                data_bytes = data[4:]  # The rest is the data -> data: d
+                
+                # self.receive_buffer.put((seq_num, data_bytes)) # 0:d 1:d 2:d 3:d 4:d
+                
+                heappush(self.receive_buffer, (seq_num, data_bytes))
+                
+            except Exception as e:
+                print("listener died!")
+                print(e)
     
     def header(self, sequence_number: int) -> bytes:
         return pack('i', sequence_number)
@@ -98,4 +117,5 @@ class Streamer:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
         # your code goes here, especially after you add ACKs and retransmissions.
-        pass
+        self.closed = True
+        self.socket.stoprecv()
