@@ -30,9 +30,9 @@ def receive(s):
                 break
 
     
-def host1(listen_port, remote_port):
-    s = Streamer(dst_ip="localhost", dst_port=remote_port,
-                 src_ip="localhost", src_port=listen_port)
+def host1(listen_port, remote_port): # server : listen port : 8000, remote port: 8001
+    s = Streamer(dst_ip="localhost", dst_port=remote_port, # send to client port: 8001
+                 src_ip="localhost", src_port=listen_port) # from server port: 8000
     receive(s)
     print("STAGE 1 TEST PASSED!")
     # send large chunks of data
@@ -49,9 +49,9 @@ def host1(listen_port, remote_port):
     print("CHECK THE OTHER SCRIPT FOR STAGE 2 RESULTS.")
 
         
-def host2(listen_port, remote_port):
-    s = Streamer(dst_ip="localhost", dst_port=remote_port,
-                 src_ip="localhost", src_port=listen_port)
+def host2(listen_port, remote_port): #  client: listen port: 8001, remote port: 8000
+    s = Streamer(dst_ip="localhost", dst_port=remote_port, # send to server port: 8000
+                 src_ip="localhost", src_port=listen_port) # from client port: 8001
     # send small pieces of data
     for i in range(NUMS):
         buf = ("%d " % i)
@@ -63,7 +63,7 @@ def host2(listen_port, remote_port):
 
 
 def main():
-    lossy_socket.sim = lossy_socket.SimulationParams(loss_rate=0.0, corruption_rate=0.0,
+    lossy_socket.sim = lossy_socket.SimulationParams(loss_rate=0.1, corruption_rate=0.0,
                                                      max_delivery_delay=0.1,
                                                      become_reliable_after=100000.0)
 
