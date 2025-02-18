@@ -33,6 +33,7 @@ class Streamer:
 
         self.ack_num = 0
         self.receive_buffer = []
+        self.send_buffer = set()
         self.expected_seq = 0
         
         self.fin_ackd = False
@@ -55,12 +56,12 @@ class Streamer:
         """
 
     def flag_byte_setter(self, is_acknowledgement=False, is_fin_acknowledgement=False):
+        flag = 0
         if is_acknowledgement:
-            return 2
+            flag |= 0x1  # Set the least significant bit for ACK
         if is_fin_acknowledgement:
-            return 1
-        else:
-            return 0  # no flags set - aka data segment
+            flag |= 0x2  # Set the second least significant bit for FIN
+        return flag
 
     def listener(self):
         while not self.closed:
@@ -70,9 +71,12 @@ class Streamer:
                 seq_num, ack_num, flags = unpack('!II?', data[:9])
                 data_bytes = data[9:]
 
-                is_ack = (flags & 0x1) # ack packet found
+                is_ack = (flags & 0x1)  # Check the least significant bit for ACK
+                is_fin = (flags & 0x2)  # Check the second least significant bit for FIN
 
-                is_fin = ((flags >> 1) & 0x1) # FIN packet found
+                if is_fin:
+                    self.fin_ackd = True
+                    print("FIN HAS BEEN DETECTED")
 
                 if not is_ack and not is_fin:  # data segment
                     if seq_num == self.expected_seq:
@@ -88,9 +92,8 @@ class Streamer:
                 if is_ack:  # acknowledgement
                     self.ack = True
                     self.ack_num = ack_num
-                   
-                if is_fin:
-                    self.fin_ackd = True
+                    
+
 
 
             except Exception as e:
@@ -121,6 +124,8 @@ class Streamer:
                 while True:
                     stalling = time.time() + 0.25  # Set timeout for 0.25 seconds
                     self.socket.sendto(full_packet, (self.dst_ip, self.dst_port))
+                    if self.seq not in self.send_buffer:
+                        self.send_buffer.add(self.seq)
                     while time.time() < stalling:
                         if self.ack and self.ack_num == self.seq:
                             break
@@ -136,13 +141,14 @@ class Streamer:
             while True:
                 stalling = time.time() + 0.25  # Set timeout for 0.25 seconds
                 self.socket.sendto(full_packet, (self.dst_ip, self.dst_port))
-
+                if self.seq not in self.send_buffer:
+                        self.send_buffer.add(self.seq)
                 while time.time() < stalling:
                     if self.ack and self.ack_num == self.seq:
                         break
                     time.sleep(0.01)  # Stall here
                 if self.ack and self.ack_num == self.seq:
-                    # print(f"ack True and seq / ack num = {self.seq}")
+                    print(f"ack True and seq / ack num = {self.seq}")
                     self.ack = False  # Reset ack flag for the next packet
                     break  # Exit the loop if ACK is received
                 else:
@@ -152,20 +158,20 @@ class Streamer:
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
-        print("recv entered")
+
         complete_data = bytes()
         while len(self.receive_buffer) == 0:
             time.sleep(0.01)
 
         while self.receive_buffer:
-            print(f"buffer state: {self.receive_buffer}")
             # print(f"state of receive buffer: {self.receive_buffer}\n expecting: {self.expected_seq}")
             seq_num, data_bytes = heappop(self.receive_buffer)
-
+            if seq_num in self.send_buffer:
+                self.send_buffer.remove(int(seq_num))
             complete_data += data_bytes # 0:d 1:d 2:d 3:d 4:d
         
         
-        print(f"data to server: {complete_data}")
+        # print(f"data to server: {complete_data}")
         return complete_data
         # time.sleep(0.01)  # Prevent busy waiting
 
@@ -174,23 +180,25 @@ class Streamer:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
         
-        while self.seq != self.ack_num: # finishes transmission
-            print(f"seq num {self.seq} \n ack num {self.ack_num}")
+        while self.send_buffer: # finishes transmission
+            print("STUCK SLEEPING")
+            print(f"send buff {self.send_buffer}")
             time.sleep(0.01)
 
         # now that transmission is done, create fin packet, send, and start timer
         while True:
-            fin_packet = pack('!II?', self.seq, self.ack_num, self.flag_byte_setter(is_fin_acknowledgement=True))
+            fin_packet = pack('!II?', 0, 0, self.flag_byte_setter(is_fin_acknowledgement=True))
             self.socket.sendto(fin_packet,(self.dst_ip, self.dst_port))
             stalling = time.time() + 0.25
             
             # check if fin packet has been ack'd
             while time.time() < stalling:
                 if self.fin_ackd: # FIN acknowledged
-                    break # break out of stal
+                    break # break out of stall
                 time.sleep(0.01)
 
             if self.fin_ackd: # FIN acknowledged
+                print("FIN ACKNOWLEDGEEEDD")
                 break # break out of all loops
 
         #     else re-loop over fin packet creation logic
