@@ -7,6 +7,7 @@ from typing import Tuple
 # constant seed makes the random number generator deterministic during testing
 random.seed(398120)
 
+# random.seed(2013)
 
 class SimulationParams:
     def __init__(self, loss_rate: float=0.0, corruption_rate: float=0.0,
