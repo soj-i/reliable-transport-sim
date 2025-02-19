@@ -7,6 +7,7 @@ import struct
 from heapq import *
 from concurrent.futures import ThreadPoolExecutor
 import time
+import hashlib
 
 
 '''
@@ -55,6 +56,43 @@ class Streamer:
 
         * Rest unused (for now)
         """
+    def compute_hash(self, data) -> bytes:
+        return hashlib.md5(data).digest()
+    
+    def packet_checksummer(self, packet) -> bytes:
+        # packet = header + data
+
+        full_checksum_field = self.compute_hash(packet)
+        four_checksum_bytes = full_checksum_field[:4]
+        header = packet[:9]
+        body = packet[9:]
+        
+        final_packet = header + four_checksum_bytes + body
+        # one packet = [header checksum data_bytes]
+        return final_packet
+
+    '''
+    
+    sender x = [seq# | ack # | flags : DATA]
+
+    checksum = hash(x) = "j123hb14i13"
+
+     new_x   [seq# | ack # | flags | checksum: DATA]
+
+            pack (new_x , (server))
+
+
+    listener :  [seq# | ack # | flags | checksum: DATA] -> incoming_packet =  maybe_x = [seq# | ack # | flags : DATA]
+    
+    maybe_x_hash = hash(maybe_x)
+
+    if maybe_x_hash == checksum : GOOD
+    else: 
+    
+    server
+
+
+    '''
 
     def flag_byte_setter(self, is_acknowledgement=False, is_fin_packet = False, is_fin_acknowledgement=False):
         flag = 0
@@ -66,57 +104,79 @@ class Streamer:
             flag |= 0x4
         return flag
 
+    def valid_checksum_checker(self, data) -> bool:
+        '''
+        header + checksum + body -> hash(header+body) == checksum?, return bool
+        '''
+
+        header_minus_check =  data[:9]
+        maybe_checksum = data[9:13]
+        body_minus_check = data[13:]
+
+        packet_without_checksum = header_minus_check + body_minus_check
+
+        return self.compute_hash(packet_without_checksum)[:4] == maybe_checksum
+
+        pass
+
     def listener(self):
         while not self.closed:
             try:
                 data, addr = self.socket.recvfrom()
-                if len(data) >= 9:
-                    seq_num, ack_num, flags = struct.unpack('!IIB', data[:9])
-                    data_bytes = data[9:]
+                if len(data) >= 13:
 
-                    is_ack = (flags & 0x1)  # Check the least significant bit for ACK
-                    is_fin = (flags & 0x2)  # Check the second least significant bit for FIN
-                    is_fin_ack = (flags & 0x4)
+                    if self.valid_checksum_checker(data):
 
-                    
-                    if is_fin_ack and self.fin:
-                        self.fin_ackd = True
-                        self.ack_num += 1
-
-                    if is_fin:
-                            self.fin = True
-                            fin_ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_fin_acknowledgement=True))
-                            # print("fin ack sent")
-                            self.socket.sendto(fin_ack_packet, (self.dst_ip, self.dst_port))
-                            
-
-                    if addr[1] == 8001: # sent FROM client
-                        # if seq_num not in self.send_buffer: # add to send buffer
-                            # print(f"adding {seq_num} to send buffer at {time.time()}")
-                            if seq_num not in self.packet_dict:
-                                self.send_buffer.append(seq_num)
-                                # print(f"send buff: {self.send_buffer}")
-                    if addr[1] == 8000: # sent TO client ( ack)
-                        if ack_num in self.send_buffer:
-                            self.send_buffer.remove(ack_num)
-                    
-                    if not is_ack and not is_fin and not is_fin_ack:  # data segment
-                        if seq_num == self.expected_seq:
-                            heappush(self.receive_buffer, (seq_num, data_bytes))
-                            self.packet_dict[seq_num] = data_bytes
-                            ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
-                            self.socket.sendto(ack_packet, (self.dst_ip, self.dst_port))
-                            self.expected_seq += 1
+                        seq_num, ack_num, flags, checksum = struct.unpack('!IIBI', data[:13])
+                        data_bytes = data[13:]
                         
-                        else:
-                            ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
-                            self.socket.sendto(ack_packet, (self.dst_ip, self.dst_port))
 
-                    if is_ack:  # acknowledgement
-                        # print(f"ack {ack_num} found in listener")
-                        self.ack = True
-                        self.ack_num = ack_num
-                        # print(f"ack {ack_num} returned \n curr send buff: {self.send_buffer}")
+                        is_ack = (flags & 0x1)  # Check the least significant bit for ACK
+                        is_fin = (flags & 0x2)  # Check the second least significant bit for FIN
+                        is_fin_ack = (flags & 0x4)
+
+                        
+                        if is_fin_ack and self.fin:
+                            self.fin_ackd = True
+                            self.ack_num += 1
+
+                        if is_fin:
+                                self.fin = True
+                                fin_ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_fin_acknowledgement=True))
+                                fin_ack_packet_with_checksum = self.packet_checksummer(fin_ack_packet)
+                                # print("fin ack sent")
+                                self.socket.sendto(fin_ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+                                
+
+                        if addr[1] == 8001: # sent FROM client
+                            # if seq_num not in self.send_buffer: # add to send buffer
+                                # print(f"adding {seq_num} to send buffer at {time.time()}")
+                                if seq_num not in self.packet_dict:
+                                    self.send_buffer.append(seq_num)
+                                    # print(f"send buff: {self.send_buffer}")
+                        if addr[1] == 8000: # sent TO client ( ack)
+                            if ack_num in self.send_buffer:
+                                self.send_buffer.remove(ack_num)
+                        
+                        if not is_ack and not is_fin and not is_fin_ack:  # data segment
+                            if seq_num == self.expected_seq:
+                                heappush(self.receive_buffer, (seq_num, data_bytes))
+                                self.packet_dict[seq_num] = data_bytes
+                                ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
+                                ack_packet_with_checksum = self.packet_checksummer(ack_packet)
+                                self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+                                self.expected_seq += 1
+                            
+                            else:
+                                ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
+                                ack_packet_with_checksum = self.packet_checksummer(ack_packet)
+                                self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+
+                        if is_ack:  # acknowledgement
+                            # print(f"ack {ack_num} found in listener")
+                            self.ack = True
+                            self.ack_num = ack_num
+                            # print(f"ack {ack_num} returned \n curr send buff: {self.send_buffer}")
                         
             except Exception as e:
                 print("listener died!")
@@ -127,7 +187,7 @@ class Streamer:
         """ Allow Streamer#send to support data larger than 1472 bytes.
         Break the data_bytes into chunks and send the data in multiple packets. """
         byte_size = len(data_bytes)
-        max_seg_size = 1472 - 4 - 4 - 1  # 9 bytes for the sequence number, ack number, and flags
+        max_seg_size = 1472 - 4 - 4 - 4 - 1  # 9 bytes for the sequence number, ack number, and flags
         splits = byte_size // max_seg_size
         start = 0
         byte_arr = []
@@ -143,9 +203,10 @@ class Streamer:
             for i in byte_arr:
                 header = struct.pack('!IIB', self.seq, self.ack_num, 0)  # seq, ack, flag
                 full_packet = header + i
+                full_packet_with_checksum = self.packet_checksummer(full_packet)
                 while True:
                     stalling = time.time() + 0.25  # Set timeout for 0.25 seconds
-                    self.socket.sendto(full_packet, (self.dst_ip, self.dst_port))
+                    self.socket.sendto(full_packet_with_checksum, (self.dst_ip, self.dst_port))
                     # if self.seq not in self.send_buffer:
                     #     self.send_buffer.add(self.seq)
                     while time.time() < stalling:
@@ -160,10 +221,10 @@ class Streamer:
         else:
             header = struct.pack('!IIB', self.seq, self.ack_num, 0)
             full_packet = header + data_bytes
-
+            full_packet_with_checksum = self.packet_checksummer(full_packet)
             while True:
                 stalling = time.time() + 0.25  # Set timeout for 0.25 seconds
-                self.socket.sendto(full_packet, (self.dst_ip, self.dst_port))
+                self.socket.sendto(full_packet_with_checksum, (self.dst_ip, self.dst_port))
                 # if self.seq not in self.send_buffer:
                 #         self.send_buffer.add(self.seq)
                 while time.time() < stalling:
@@ -219,7 +280,8 @@ class Streamer:
             # print(f"buffers before fin sent:\nsend: {self.send_buffer}\n receive:{self.receive_buffer}\ncurrent ack: {self.ack_num}\ncurrent seq:{self.seq}")
             # print(f"size of dict: {len(self.packet_dict)}")
             fin_packet = struct.pack('!IIB', 0, 0, self.flag_byte_setter(is_fin_packet=True))
-            self.socket.sendto(fin_packet,(self.dst_ip, self.dst_port))
+            fin_packet_with_checksum = self.packet_checksummer(fin_packet)
+            self.socket.sendto(fin_packet_with_checksum,(self.dst_ip, self.dst_port))
             # print("original fin sent")
             stalling = time.time() + 0.25
             
