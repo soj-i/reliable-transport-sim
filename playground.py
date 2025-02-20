@@ -1,26 +1,32 @@
 import struct
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
-
+import threading
 def compute_hash(data) -> bytes:
     return hashlib.md5(data).digest()
 
+class Testing:
+    def __init__(self):
+        self.timer = time.time() + 5.25
+
+
 def main():
 
+    time_object = Testing()
+    print(f"curr time {time.time()}, timer at : {time_object.timer}")
     
-    test1 = struct.pack("IIB", 123, 456, 0)
+    print("sleeping...")
+    time.sleep(6)
 
-    test2 = struct.pack("IIB", 123, 456, 1)
+    print(f"curr time {time.time()}, timer at : {time_object.timer}")
 
-    test3 = struct.pack("IIB", 123, 456, 2)
+    time_object.timer+=10
 
-    tests = [test1, test2, test3]
-
+    print(f"curr time {time.time()}, timer now set to : {time_object.timer}")
     
-    data_stuff = b'"hello"'
     
-    print(f"hash of {data_stuff}\n hash: {compute_hash(data_stuff)}\nsize: {(compute_hash(data_stuff))}")
-
     # for i in range(len(tests)):
     #     print(f"test {i+1}:")
     #     seq, ack, flag = struct.unpack("IIB", tests[i])

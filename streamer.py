@@ -24,7 +24,8 @@ class Streamer:
         
         self.seq = 0
         self.ack = False
-        self.listener_seq = -1
+        self.timer = time.time() + 0.50
+
 
         self.ack_num = 0
         self.receive_buffer = []
@@ -39,7 +40,7 @@ class Streamer:
         executor.submit(self.listener)
 
         self.lock = Lock()
-
+        self.timer = time.time()
         self.unacknowledged_packets = {}
 
         """
@@ -93,70 +94,70 @@ class Streamer:
         computed_checksum = self.compute_hash(packet_without_checksum)[:4]
 
         if computed_checksum != maybe_checksum:
-            print(f"Checksum mismatch: computed {computed_checksum} != received {maybe_checksum}")
             return False
-
         return True
 
     def listener(self):
         while not self.closed:
             try:
                 data, addr = self.socket.recvfrom()
-                if len(data) >= 13:
+
+                if self.timer < time.time():
+                    self.timer+=2.50
+                    self.retransmit_unacknowledged_packets()
                     
+                if len(data) >= 13:
                     if self.valid_checksum_checker(data):
-                        
-                        seq_num, ack_num, flags, checksum = struct.unpack('!IIBI', data[:13])
+                        seq_num_on_packet, ack_num_on_packet, flags, checksum = struct.unpack('!IIBI', data[:13])
                         data_bytes = data[13:]
-                        
-                        is_ack = (flags & 0x1)  # Check the least significant bit for ACK
-                        is_fin = (flags & 0x2)  # Check the second least significant bit for FIN
-                        is_fin_ack = (flags & 0x4)
 
-                        if is_fin_ack and self.fin:
-                            self.fin_ackd = True
-                            self.ack_num += 1
+                        is_ack = (flags & 0x1)
+                        if is_ack:  # packet is acknowledgement
+                            with self.lock:
+                                if ack_num_on_packet in self.unacknowledged_packets:
+                                    # ack num will be same as seq num
+                                    self.unacknowledged_packets.pop(ack_num_on_packet)
 
-                        if is_fin:
+                        is_fin = (flags & 0x2)
+                        if is_fin: # packet is fin
                             self.fin = True
-                            fin_ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_fin_acknowledgement=True))
+                            fin_ack_packet = struct.pack('!IIB', seq_num_on_packet, seq_num_on_packet, self.flag_byte_setter(is_fin_acknowledgement=True))
                             fin_ack_packet_with_checksum = self.packet_checksummer(fin_ack_packet)
                             self.socket.sendto(fin_ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+
+                        is_fin_ack = (flags & 0x4)
+                        if is_fin_ack and self.fin: # packet is fin ACK
+                            self.fin_ackd = True
+                            self.ack_num += 1
                         
-                        if not is_ack and not is_fin and not is_fin_ack:  # data segment
-                            if seq_num == self.expected_seq:
-                                self.listener_seq += 1
-                                heappush(self.receive_buffer, (seq_num, data_bytes))
-                                self.packet_dict[seq_num] = data_bytes
-                                ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
-                                ack_packet_with_checksum = self.packet_checksummer(ack_packet)
-                                self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
-                                self.expected_seq += 1
-                            else:
-                                ack_packet = struct.pack('!IIB', self.seq, seq_num, self.flag_byte_setter(is_acknowledgement=True))
-                                ack_packet_with_checksum = self.packet_checksummer(ack_packet)
-                                self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
-
-                        if addr[1] == 8000:  # sent FROM client
-                            if seq_num not in self.packet_dict and seq_num <= self.listener_seq:
-                                self.send_buffer.append(seq_num)
-                        else:
-                            print(f"{addr[1]} not equal to int {8000}")
-
-                        if addr[1] == 8001:  # sent TO client (ack)
-                            if ack_num in self.send_buffer:
-                                self.send_buffer.remove(ack_num)
-                        else:
-                            print(f"{addr[1]} not equal to int {8001}, should be {type(addr[1])}")
-
-                        if is_ack:  # acknowledgement
-                            self.ack = True
-                            self.ack_num = ack_num
+                        if not is_ack and not is_fin and not is_fin_ack:  # packet is data from client
                             with self.lock:
-                                if ack_num in self.unacknowledged_packets:
-                                    self.unacknowledged_packets.pop(ack_num)
-                    else:
-                        print("checksum check failed")
+                                heappush(self.receive_buffer, (seq_num_on_packet, data_bytes)) # add to receive buffer
+                        
+                                self.unacknowledged_packets[seq_num_on_packet] = data # full packet (header+checksum+data)
+                                
+                            ack_packet = struct.pack('!IIB', seq_num_on_packet, seq_num_on_packet, self.flag_byte_setter(is_acknowledgement=True))
+                            ack_packet_with_checksum = self.packet_checksummer(ack_packet)
+                            self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+
+                    
+                    
+                        # else:
+                        #     ack_packet = struct.pack('!IIB', seq_num_on_packet, seq_num, self.flag_byte_setter(is_acknowledgement=True))
+                        #     ack_packet_with_checksum = self.packet_checksummer(ack_packet)
+                        #     self.socket.sendto(ack_packet_with_checksum, (self.dst_ip, self.dst_port))
+
+                        # if addr[1] == 8001:  # sent FROM client
+                        #     # with self.lock:
+                        #     if seq_num_on_packet not in self.packet_dict and seq_num_on_packet <= self.listener_seq:
+                        #         self.send_buffer.append(seq_num)
+
+
+                        if addr[1] == 8000:  # sent TO client (ack)
+                            # with self.lock:       
+                            if ack_num_on_packet in self.send_buffer:
+                                self.send_buffer.remove(ack_num_on_packet)
+                        
                         
             except Exception as e:
                 print("listener died!")
@@ -184,49 +185,61 @@ class Streamer:
                 header = struct.pack('!IIB', self.seq, self.ack_num, 0)  # seq, ack, flag
                 full_packet = header + i
                 full_packet_with_checksum = self.packet_checksummer(full_packet)
-                with self.lock:
-                    self.unacknowledged_packets[self.seq] = full_packet_with_checksum
+
+                self.unacknowledged_packets[self.seq] = full_packet_with_checksum
+                heappush(self.send_buffer, (self.seq))
+                # print(f"added {self.seq} to unack dictionary")
                 self.socket.sendto(full_packet_with_checksum, (self.dst_ip, self.dst_port))
                 self.seq += 1
-                print(f"seq num now: {self.seq}")
         else:
             header = struct.pack('!IIB', self.seq, self.ack_num, 0)
             full_packet = header + data_bytes
             full_packet_with_checksum = self.packet_checksummer(full_packet)
-            with self.lock:
-                self.unacknowledged_packets[self.seq] = full_packet_with_checksum
+            
+            self.unacknowledged_packets[self.seq] = full_packet_with_checksum
+            heappush(self.send_buffer, (self.seq))
+            # print(f"added {self.seq} to unack dictionary")
             self.socket.sendto(full_packet_with_checksum, (self.dst_ip, self.dst_port))
             self.seq += 1
+        
 
     def retransmit_unacknowledged_packets(self):
-        while not self.closed:
-            with self.lock:
-                for seq_num, packet in self.unacknowledged_packets.items():
-                    self.socket.sendto(packet, (self.dst_ip, self.dst_port))
-            time.sleep(0.25)
+        with self.lock:
+            print(f"unack dic:{self.unacknowledged_packets} send buff: {self.send_buffer}")
+            if self.unacknowledged_packets and self.send_buffer: # seq : full_packet
+                lowest_packet_to_resend = heappop(self.send_buffer)
+                if lowest_packet_to_resend in self.unacknowledged_packets:
+                    print(f"resending {lowest_packet_to_resend}")
+                    self.socket.sendto(self.unacknowledged_packets[lowest_packet_to_resend], (self.dst_ip, self.dst_port))
+
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
-
+        
         complete_data = bytes()
-        while len(self.receive_buffer) == 0:
-            # print("receive empty")
+        while not (self.receive_buffer and self.receive_buffer[0][0] == self.expected_seq):
             time.sleep(0.01)
 
-        while self.receive_buffer:
-            seq_num, data_bytes = heappop(self.receive_buffer)
-            if seq_num in self.send_buffer:
-                self.ack_num = seq_num
-                self.send_buffer.remove(seq_num)
-
-            complete_data += data_bytes
-        
-        return complete_data
+        with self.lock:
+            while self.receive_buffer and self.receive_buffer[0][0] == self.expected_seq:
+                seq_num, data_bytes = heappop(self.receive_buffer)
+                self.expected_seq+=1
+                print(f"now expecting {self.expected_seq}")
+                if seq_num in self.unacknowledged_packets:
+                    self.ack_num = seq_num
+                    self.unacknowledged_packets.pop(seq_num)
+                    print(f"now acknowledged, removed from dic: {seq_num}")
+                if seq_num in self.send_buffer:
+                    self.send_buffer.remove(seq_num)
+            
+                complete_data += data_bytes
+             
+                return complete_data
 
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
-        
+        # with self.lock:
         while self.unacknowledged_packets:
             time.sleep(0.01)
 
