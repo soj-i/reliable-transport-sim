@@ -8,7 +8,7 @@ from heapq import *
 from concurrent.futures import ThreadPoolExecutor
 import time
 import hashlib
-from threading import Lock, Timer
+from threading import Lock
 
 '''
 
@@ -125,7 +125,7 @@ class Streamer:
                 if len(data) >= 13:
 
                     if self.valid_checksum_checker(data):
-                        print("checksum check success")
+                        # print("checksum check success")
 
                         seq_num, ack_num, flags, checksum = struct.unpack('!IIBI', data[:13])
                         data_bytes = data[13:]
